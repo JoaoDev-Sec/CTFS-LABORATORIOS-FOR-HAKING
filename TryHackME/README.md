@@ -1,0 +1,312 @@
+# Basic Pentesting — CTF Write-up
+
+Neste write-up, documento como resolvi o laboratório **Basic Pentesting**, registrando as etapas que segui, os comandos que utilizei e as informações que encontrei durante a enumeração e a exploração do ambiente.
+
+O objetivo deste relatório é mostrar meu raciocínio durante o desafio, e não apenas listar comandos. Ao longo do processo, utilizei enumeração de serviços, análise de conteúdo web, investigação de compartilhamentos SMB e testes de autenticação no SSH.
+
+> **Aviso:** este relatório contém spoilers da resolução do laboratório. Todas as atividades descritas devem ser realizadas apenas em ambientes próprios ou com autorização explícita.
+
+## Sumário
+
+- [1. Objetivo](#1-objetivo)
+- [2. Ambiente e escopo](#2-ambiente-e-escopo)
+- [3. Ferramentas utilizadas](#3-ferramentas-utilizadas)
+- [4. Enumeração inicial](#4-enumeração-inicial)
+  - [4.1. Verificando a conectividade](#41-verificando-a-conectividade)
+  - [4.2. Enumerando portas e serviços](#42-enumerando-portas-e-serviços)
+- [5. Enumeração web](#5-enumeração-web)
+  - [5.1. Descobrindo diretórios](#51-descobrindo-diretórios)
+  - [5.2. Analisando os arquivos encontrados](#52-analisando-os-arquivos-encontrados)
+- [6. Enumeração SMB](#6-enumeração-smb)
+- [7. Acesso inicial via SSH](#7-acesso-inicial-via-ssh)
+- [8. Investigando a conta `kay`](#8-investigando-a-conta-kay)
+- [9. Resumo dos resultados](#9-resumo-dos-resultados)
+- [10. Conclusão](#10-conclusão)
+- [11. Recomendações de segurança](#11-recomendações-de-segurança)
+
+## 1. Objetivo
+
+Meu objetivo neste laboratório foi identificar os serviços disponíveis no alvo, encontrar informações que pudessem ajudar na investigação e utilizar essas descobertas para avançar no desafio até encontrar a flag final.
+
+Comecei verificando a conectividade com a máquina. Depois, enumerei as portas abertas, analisei o servidor web e o compartilhamento SMB e usei as informações encontradas para investigar o acesso via SSH.
+
+## 2. Ambiente e escopo
+
+- **Laboratório:** Basic Pentesting
+- **IP utilizado nas minhas anotações:** `10.66.189.130`
+- **Tipo de atividade:** CTF / laboratório controlado
+- **Objetivo:** enumeração, identificação de possíveis falhas de configuração e obtenção da flag do desafio
+
+> O endereço IP pode ser temporário e específico do ambiente em que o laboratório foi executado. Antes de reproduzir os comandos, confirme o IP atual da máquina.
+
+## 3. Ferramentas utilizadas
+
+| Ferramenta | Como utilizei |
+|---|---|
+| `ping` | Para verificar se a máquina respondia na rede |
+| `Nmap` | Para identificar portas abertas e versões dos serviços |
+| `ffuf` | Para procurar diretórios e arquivos no servidor web |
+| `smbclient` | Para listar e acessar compartilhamentos SMB |
+| `Hydra` | Para testar a segurança da senha do usuário identificado no laboratório |
+| `ssh` | Para acessar o serviço SSH |
+| `ssh2john` | Para converter a chave SSH em um formato que pudesse ser analisado pelo John the Ripper |
+| `John the Ripper` | Para auditar a proteção por senha da chave SSH |
+
+## 4. Enumeração inicial
+
+### 4.1. Verificando a conectividade
+
+Primeiro, verifiquei se a máquina estava acessível utilizando o `ping`:
+
+```bash
+ping 10.66.189.130
+```
+
+O resultado registrado foi de **0% de perda de pacotes**, indicando que a máquina respondeu durante o teste.
+
+O TTL também pode fornecer uma pista sobre o sistema operacional, mas não é suficiente para confirmar sozinho que a máquina utiliza Linux. Esse valor depende da configuração do sistema e pode mudar ao atravessar dispositivos de rede.
+
+**Evidência:**
+
+<!-- Adicione aqui a imagem do resultado do ping. Exemplo: ![Resultado do ping](images/ping.png) -->
+
+### 4.2. Enumerando portas e serviços
+
+Com a conectividade verificada, utilizei o Nmap para identificar as portas abertas e tentar reconhecer as versões dos serviços:
+
+```bash
+nmap -sV -Pn --open 10.66.189.130
+```
+
+Nas minhas anotações, identifiquei os seguintes serviços:
+
+| Porta | Serviço | Versão registrada nas anotações |
+|---|---|---|
+| `22/tcp` | SSH | OpenSSH 8.2p1 |
+| `80/tcp` | HTTP | Apache 2.4.41 |
+| `139/tcp` | NetBIOS/SMB | Associado ao Samba |
+| `445/tcp` | SMB | Associado ao Samba 4 |
+
+A partir desses resultados, decidi investigar três pontos: o serviço web na porta 80, o compartilhamento SMB nas portas 139 e 445 e o SSH na porta 22.
+
+As versões acima foram registradas durante o laboratório. Se eu precisar reproduzir a análise, devo confirmar os dados na saída original do Nmap.
+
+**Evidência:**
+
+<!-- Adicione aqui a captura do Nmap. Exemplo: ![Enumeração Nmap](images/nmap.png) -->
+
+## 5. Enumeração web
+
+Ao acessar o servidor web pela porta 80, encontrei uma página informando que o site estava em manutenção. Por isso, decidi procurar outros diretórios e arquivos que não estivessem visíveis na página inicial.
+
+### 5.1. Descobrindo diretórios
+
+Utilizei o `ffuf` com a wordlist `common.txt`:
+
+```bash
+ffuf -u http://10.66.189.130/FUZZ \
+  -w /usr/share/wordlists/dirb/common.txt \
+  -mc 200,301,302
+```
+
+Durante essa etapa, encontrei os seguintes caminhos:
+
+- `/development`
+- `/index.html`
+
+O diretório `/development` chamou minha atenção porque continha arquivos de texto que poderiam revelar informações sobre o ambiente.
+
+**Evidência:**
+
+<!-- Adicione aqui a captura dos resultados do ffuf. Exemplo: ![Descoberta de diretórios](images/ffuf.png) -->
+
+### 5.2. Analisando os arquivos encontrados
+
+Dentro de `/development`, encontrei dois arquivos de texto e comecei pelo `dev.txt`.
+
+As mensagens registradas nesse arquivo mencionavam:
+
+- Testes com Apache Struts, incluindo a versão `2.5.12`;
+- Configuração do SMB;
+- Referências aos usuários identificados pelas iniciais `J` e `K`;
+- Uma mensagem de que a senha do usuário `J` havia sido quebrada com facilidade.
+
+Essas informações me deram pistas para continuar a investigação. A referência a uma senha fraca indicava que valia a pena verificar os usuários citados e os serviços que poderiam permitir autenticação.
+
+A menção a uma versão de software, por si só, não comprova que exista uma vulnerabilidade explorável. Ela serve como informação para uma investigação posterior.
+
+**Evidência:**
+
+<!-- Adicione aqui a captura do conteúdo de dev.txt. Exemplo: ![Notas de desenvolvimento](images/dev-notes.png) -->
+
+## 6. Enumeração SMB
+
+Depois de analisar as notas de desenvolvimento, passei a investigar o SMB para verificar quais compartilhamentos estavam disponíveis.
+
+Para listar os compartilhamentos, utilizei:
+
+```bash
+smbclient -L //10.66.189.130 -U Anonymous -M SMB3
+```
+
+Em seguida, tentei acessar o compartilhamento `Anonymous`:
+
+```bash
+smbclient //10.66.189.130/Anonymous -U Anonymous -m SMB3
+```
+
+Dentro do compartilhamento, encontrei o arquivo `staff.txt`. Baixei o arquivo com o comando:
+
+```text
+get staff.txt
+```
+
+Depois, li o conteúdo localmente:
+
+```bash
+cat staff.txt
+```
+
+O arquivo continha um comunicado interno e mencionava o nome **Jan**. Juntando essa informação às referências encontradas no `dev.txt`, consegui relacionar os nomes Jan e Kay à investigação.
+
+Essa etapa mostrou como arquivos expostos em um compartilhamento podem revelar informações úteis para a enumeração de usuários.
+
+**Evidência:**
+
+<!-- Adicione aqui a captura do compartilhamento SMB e/ou do staff.txt. Exemplo: ![Enumeração SMB](images/smb.png) -->
+
+## 7. Acesso inicial via SSH
+
+Como as informações encontradas indicavam que a senha de um dos usuários era fraca, decidi testar a segurança da autenticação SSH da conta `jan` no ambiente do CTF.
+
+Utilizei o Hydra com a wordlist `rockyou.txt`:
+
+```bash
+hydra -l jan \
+  -P /usr/share/wordlists/rockyou.txt \
+  -t 4 -f \
+  10.66.189.130 ssh
+```
+
+De acordo com o resultado registrado durante o laboratório, o teste identificou uma credencial válida para a conta `jan`.
+
+Em seguida, acessei a máquina por SSH:
+
+```bash
+ssh jan@10.66.189.130
+```
+
+Com isso, obtive acesso ao shell do usuário `jan` e pude continuar a enumeração a partir do contexto dessa conta.
+
+Não reproduzi a senha neste relatório público. Em um portfólio, é melhor evitar publicar credenciais ou outros dados de acesso quando eles não são necessários para explicar o raciocínio.
+
+**Evidência:**
+
+<!-- Adicione aqui a captura do resultado do Hydra e/ou do acesso SSH. Exemplo: ![Acesso SSH inicial](images/ssh-jan.png) -->
+
+## 8. Investigando a conta `kay`
+
+Depois de entrar como `jan`, continuei explorando os arquivos e diretórios aos quais tinha acesso. Nas minhas anotações, registrei a descoberta de um diretório `.ssh` associado à conta `kay`, contendo uma chave privada chamada `id_rsa`.
+
+Uma chave privada SSH pode estar protegida por uma *passphrase*. Para avaliar essa proteção no laboratório, utilizei o `ssh2john` para converter a chave em um formato que o John the Ripper pudesse processar:
+
+```bash
+ssh2john id_rsa > hash.txt
+```
+
+Depois, executei o John the Ripper com a wordlist `rockyou.txt`:
+
+```bash
+john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt
+```
+
+Segundo minhas anotações, a auditoria encontrou a *passphrase* da chave. Isso permitiu avançar para a tentativa de autenticação como `kay`.
+
+O comando SSH utilizado para essa etapa foi registrado originalmente como:
+
+```bash
+ssh -i /caminho/para/id_rsa kay@10.66.189.130
+```
+
+O caminho acima é um exemplo: devo substituí-lo pelo caminho real da chave no ambiente do laboratório. Também é importante confirmar que o arquivo está acessível pela conta utilizada e que suas permissões estão corretas.
+
+Após autenticar como `kay`, continuei a enumeração e encontrei a flag final do desafio, conforme registrado nas minhas anotações.
+
+Não incluí o valor da flag nem a *passphrase* neste relatório público.
+
+**Evidência:**
+
+<!-- Adicione aqui as capturas da análise da chave e do acesso como kay. Exemplo: ![Acesso à conta kay](images/ssh-kay.png) -->
+
+## 9. Resumo dos resultados
+
+| Etapa | Resultado |
+|---|---|
+| Verificação de conectividade | A máquina respondeu ao `ping` |
+| Enumeração de serviços | Foram registrados SSH, HTTP e SMB |
+| Enumeração web | Foram encontrados `/development` e `/index.html` |
+| Análise de arquivos | As notas de desenvolvimento forneceram pistas sobre usuários e senhas |
+| Enumeração SMB | O compartilhamento `Anonymous` permitiu encontrar `staff.txt` |
+| Acesso inicial | As anotações registram acesso SSH como `jan` após auditoria de senha |
+| Investigação da chave SSH | A auditoria da *passphrase* permitiu avançar para a conta `kay` |
+| Objetivo final | A flag final foi encontrada, segundo o registro do laboratório |
+
+## 10. Conclusão
+
+Neste laboratório, consegui avançar combinando as informações obtidas em diferentes etapas, em vez de depender de uma única ferramenta.
+
+Comecei pela conectividade e enumeração de portas. Depois, investiguei o servidor web e encontrei notas que ajudaram a direcionar a análise. A enumeração SMB revelou mais informações sobre os usuários, e os testes de autenticação permitiram obter acesso inicial por SSH. Por fim, a análise da chave SSH possibilitou avançar para a conta `kay` e localizar a flag final.
+
+O principal aprendizado foi perceber como informações expostas, senhas fracas e proteção insuficiente de chaves podem se combinar e aumentar o risco de comprometimento de um sistema.
+
+## 11. Recomendações de segurança
+
+Com base no que observei durante o laboratório, estas seriam algumas medidas para reduzir os riscos:
+
+- Evitar publicar arquivos internos, notas de desenvolvimento ou informações desnecessárias em diretórios web acessíveis.
+- Revisar as permissões dos compartilhamentos SMB e desabilitar o acesso anônimo quando não for necessário.
+- Utilizar senhas fortes, exclusivas e resistentes a ataques de dicionário.
+- Proteger chaves privadas SSH com *passphrases* fortes e permissões restritivas.
+- Evitar que arquivos sensíveis de uma conta sejam acessíveis por outros usuários sem necessidade.
+- Monitorar tentativas repetidas de autenticação e investigar padrões suspeitos.
+- Manter os serviços atualizados e validar as versões detectadas antes de avaliar vulnerabilidades específicas.
+
+Essas recomendações se baseiam nos achados registrados neste CTF e não representam uma auditoria completa de um ambiente real.
+
+---
+
+## Referências
+
+- [Nmap — Reference Guide](https://nmap.org/book/man.html)
+- [ffuf — GitHub](https://github.com/ffuf/ffuf)
+- [Samba — documentação do `smbclient`](https://www.samba.org/samba/docs/current/man-html/smbclient.1.html)
+- [THC Hydra — GitHub](https://github.com/vanhauser-thc/thc-hydra)
+- [John the Ripper](https://www.openwall.com/john/)
+- [OpenSSH — Manual Pages](https://www.openssh.com/manual.html)
+
+---
+
+## Checklist antes de publicar
+
+- [ ] Conferir se o IP ainda é específico do laboratório e se deve ser removido.
+- [ ] Adicionar as capturas de tela na pasta `images/`.
+- [ ] Substituir os comentários de evidência por imagens Markdown.
+- [ ] Confirmar as versões dos serviços com a saída original do Nmap.
+- [ ] Revisar o texto e verificar se os comandos correspondem ao que executei.
+- [ ] Não publicar senhas, *passphrases*, flags ou informações sensíveis desnecessárias.
+- [ ] Testar a renderização do `README.md` no GitHub.
+
+### Estrutura sugerida do repositório
+
+```text
+basic-pentesting-ctf/
+├── README.md
+└── images/
+    ├── ping.png
+    ├── nmap.png
+    ├── ffuf.png
+    ├── dev-notes.png
+    ├── smb.png
+    ├── ssh-jan.png
+    └── ssh-kay.png
+```
